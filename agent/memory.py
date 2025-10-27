@@ -1,8 +1,8 @@
 """
-Memory Layer - Remembering Stuff
+Memory Layer - YouTube RAG Memory with FAISS
 
-This module handles the memory layer of the cognitive architecture.
-It stores and retrieves facts, user preferences, and context information.
+This module handles the memory layer with FAISS vector store for YouTube transcripts.
+Stores and retrieves YouTube video chunks using semantic search.
 """
 import logging
 import json
@@ -10,11 +10,17 @@ import os
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+import numpy as np
+import faiss
+import pickle
+
 from .models import (
     MemoryState, 
     MemoryFact, 
     MemoryQuery, 
-    MemoryRetrievalResult
+    MemoryRetrievalResult,
+    YouTubeTranscriptChunk,
+    YouTubeContext
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +41,7 @@ class MemoryLayer:
     
     def __init__(self, memory_file: Optional[str] = None, load_existing: bool = False):
         """
-        Initialize the Memory Layer.
+        Initialize the Memory Layer with FAISS vector store for YouTube.
         
         Args:
             memory_file: Optional path to JSON file for persistent memory
@@ -44,11 +50,27 @@ class MemoryLayer:
         self.memory_state = MemoryState()
         self.memory_file = memory_file
         
+        # Initialize YouTube FAISS vector store
+        self.youtube_index: Optional[faiss.Index] = None
+        self.youtube_metadata: List[Dict[str, Any]] = []
+        self.youtube_dimension = 768  # nomic-embed-text dimension
+        
+        # Paths for FAISS persistence
+        if memory_file:
+            base_path = Path(memory_file).parent
+            self.youtube_index_file = base_path / "youtube_faiss.index"
+            self.youtube_metadata_file = base_path / "youtube_metadata.pkl"
+        else:
+            self.youtube_index_file = None
+            self.youtube_metadata_file = None
+        
         # Load existing memory only if explicitly requested and file exists
         if load_existing and memory_file and Path(memory_file).exists():
             self.load_memory()
+            self.load_youtube_index()
         
-        logger.info("[MEMORY] Memory Layer initialized")
+        logger.info("[MEMORY] Memory Layer initialized with YouTube FAISS")
+        logger.info(f"[MEMORY] YouTube vector store ready (dimension: {self.youtube_dimension})")
     
     def store_fact(self, content: str, source: str = "user", relevance_score: float = 1.0):
         """
@@ -249,6 +271,7 @@ class MemoryLayer:
         """
         Save memory to JSON file for persistence.
         Automatically rotates the file if it exceeds size limit.
+        Also saves YouTube FAISS index.
         """
         if not self.memory_file:
             logger.warning("No memory file specified, cannot save")
@@ -266,6 +289,9 @@ class MemoryLayer:
             # Log file size
             file_size_kb = os.path.getsize(self.memory_file) / 1024
             logger.info(f"[MEMORY] Memory saved to {self.memory_file} (size: {file_size_kb:.1f}KB)")
+            
+            # Save YouTube index
+            self.save_youtube_index()
             
         except Exception as e:
             logger.error(f"Failed to save memory: {e}")
@@ -302,5 +328,184 @@ class MemoryLayer:
         if self.memory_state.conversation_summary:
             summary += f"- Summary: {self.memory_state.conversation_summary}\n"
         
+        # Add YouTube index stats
+        if self.youtube_index:
+            summary += f"- YouTube chunks indexed: {self.youtube_index.ntotal}\n"
+        
         return summary
+    
+    # ============================================================================
+    # YOUTUBE FAISS VECTOR STORE METHODS
+    # ============================================================================
+    
+    def add_youtube_chunks(
+        self, 
+        chunks: List[YouTubeTranscriptChunk],
+        embeddings: np.ndarray
+    ) -> int:
+        """
+        Add YouTube transcript chunks to FAISS vector store.
+        
+        Args:
+            chunks: List of YouTube transcript chunks with metadata
+            embeddings: Numpy array of embeddings (shape: [n_chunks, dimension])
+            
+        Returns:
+            Number of chunks added
+        """
+        if embeddings.shape[0] != len(chunks):
+            raise ValueError("Number of embeddings must match number of chunks")
+        
+        if embeddings.shape[1] != self.youtube_dimension:
+            raise ValueError(f"Embedding dimension mismatch: expected {self.youtube_dimension}, got {embeddings.shape[1]}")
+        
+        # Initialize index if not exists
+        if self.youtube_index is None:
+            self.youtube_index = faiss.IndexFlatL2(self.youtube_dimension)
+            logger.info(f"[MEMORY] Created new FAISS index with dimension {self.youtube_dimension}")
+        
+        # Add embeddings to FAISS
+        self.youtube_index.add(embeddings.astype(np.float32))
+        
+        # Store metadata
+        for chunk in chunks:
+            self.youtube_metadata.append({
+                'video_id': chunk.video_id,
+                'chunk_text': chunk.chunk_text,
+                'start_timestamp': chunk.start_timestamp,
+                'end_timestamp': chunk.end_timestamp,
+                'chunk_index': chunk.chunk_index
+            })
+        
+        logger.info(f"[MEMORY] Added {len(chunks)} YouTube chunks to vector store")
+        logger.info(f"[MEMORY] Total chunks in index: {self.youtube_index.ntotal}")
+        
+        return len(chunks)
+    
+    def search_youtube_content(
+        self,
+        query_embedding: np.ndarray,
+        top_k: int = 3,
+        video_id_filter: Optional[str] = None
+    ) -> List[YouTubeContext]:
+        """
+        Search YouTube content using semantic similarity.
+        
+        Args:
+            query_embedding: Query embedding vector (shape: [dimension])
+            top_k: Number of results to return
+            video_id_filter: Optional video ID to filter results
+            
+        Returns:
+            List of YouTubeContext objects with relevant chunks
+        """
+        if self.youtube_index is None or self.youtube_index.ntotal == 0:
+            logger.warning("[MEMORY] No YouTube content indexed yet")
+            return []
+        
+        # Reshape query for FAISS
+        query_vector = query_embedding.reshape(1, -1).astype(np.float32)
+        
+        # Search in FAISS - get more results if filtering by video_id
+        search_k = top_k * 3 if video_id_filter else top_k
+        distances, indices = self.youtube_index.search(query_vector, min(search_k, self.youtube_index.ntotal))
+        
+        # Retrieve metadata and create contexts
+        contexts = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx < 0 or idx >= len(self.youtube_metadata):
+                continue
+            
+            metadata = self.youtube_metadata[idx]
+            
+            # Apply video ID filter if specified
+            if video_id_filter and metadata['video_id'] != video_id_filter:
+                continue
+            
+            # Convert L2 distance to similarity score (inverse)
+            # Smaller distance = higher similarity
+            similarity_score = 1.0 / (1.0 + float(dist))
+            
+            context = YouTubeContext(
+                video_id=metadata['video_id'],
+                chunk_text=metadata['chunk_text'],
+                timestamp=metadata['start_timestamp'],
+                relevance_score=similarity_score
+            )
+            contexts.append(context)
+            
+            # Stop if we have enough results
+            if len(contexts) >= top_k:
+                break
+        
+        logger.info(f"[MEMORY] Found {len(contexts)} relevant YouTube chunks")
+        return contexts
+    
+    def save_youtube_index(self):
+        """Save FAISS index and metadata to disk."""
+        if self.youtube_index is None or self.youtube_index_file is None:
+            logger.debug("[MEMORY] No YouTube index to save")
+            return
+        
+        try:
+            # Ensure directory exists
+            os.makedirs(self.youtube_index_file.parent, exist_ok=True)
+            
+            # Save FAISS index
+            faiss.write_index(self.youtube_index, str(self.youtube_index_file))
+            
+            # Save metadata
+            with open(self.youtube_metadata_file, 'wb') as f:
+                pickle.dump(self.youtube_metadata, f)
+            
+            logger.info(f"[MEMORY] Saved YouTube index: {self.youtube_index.ntotal} chunks")
+            logger.info(f"[MEMORY] Index file: {self.youtube_index_file}")
+            
+        except Exception as e:
+            logger.error(f"[MEMORY] Failed to save YouTube index: {e}")
+    
+    def load_youtube_index(self):
+        """Load FAISS index and metadata from disk."""
+        if self.youtube_index_file is None or not Path(self.youtube_index_file).exists():
+            logger.info("[MEMORY] No existing YouTube index found")
+            return
+        
+        try:
+            # Load FAISS index
+            self.youtube_index = faiss.read_index(str(self.youtube_index_file))
+            
+            # Load metadata
+            with open(self.youtube_metadata_file, 'rb') as f:
+                self.youtube_metadata = pickle.load(f)
+            
+            logger.info(f"[MEMORY] Loaded YouTube index: {self.youtube_index.ntotal} chunks")
+            
+        except Exception as e:
+            logger.error(f"[MEMORY] Failed to load YouTube index: {e}")
+            # Initialize empty index on failure
+            self.youtube_index = None
+            self.youtube_metadata = []
+    
+    def get_youtube_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about indexed YouTube content.
+        
+        Returns:
+            Dictionary with stats
+        """
+        if self.youtube_index is None:
+            return {
+                'total_chunks': 0,
+                'unique_videos': 0,
+                'video_ids': []
+            }
+        
+        # Count unique videos
+        video_ids = set(meta['video_id'] for meta in self.youtube_metadata)
+        
+        return {
+            'total_chunks': self.youtube_index.ntotal,
+            'unique_videos': len(video_ids),
+            'video_ids': list(video_ids)
+        }
 

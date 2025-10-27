@@ -1,11 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Math Agent",
+  "name": "YouTube RAG Assistant",
   "version": "1.0",
-  "description": "A Chrome extension to interact with Math Agent AI",
-  "permissions": ["activeTab", "storage"],
+  "description": "Index YouTube videos and ask questions using RAG with local embeddings",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
   "host_permissions": [
-    "http://localhost:5000/*"
+    "http://localhost:5000/*",
+    "*://www.youtube.com/*",
+    "*://youtube.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.youtube.com/*",
+        "*://youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
   ],
   "action": {
     "default_popup": "popup.html",

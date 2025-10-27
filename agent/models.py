@@ -133,6 +133,57 @@ class FormattedPrompt(BaseModel):
 
 
 # ============================================================================
+# YOUTUBE RAG MODELS
+# ============================================================================
+
+class YouTubeTranscriptChunk(BaseModel):
+    """Model for a chunk of YouTube transcript with metadata"""
+    video_id: str = Field(..., description="YouTube video ID")
+    chunk_text: str = Field(..., description="Text content of the chunk")
+    start_timestamp: float = Field(..., description="Start time in seconds")
+    end_timestamp: float = Field(..., description="End time in seconds")
+    chunk_index: int = Field(..., description="Index of this chunk in the video")
+
+
+class IndexYouTubeInput(BaseModel):
+    """Input model for indexing a YouTube video"""
+    video_id: str = Field(..., min_length=11, max_length=11, description="YouTube video ID (11 characters)")
+    video_url: Optional[str] = Field(None, description="Full YouTube URL (optional)")
+
+
+class IndexYouTubeOutput(BaseModel):
+    """Output model for YouTube indexing operation"""
+    success: bool = Field(..., description="Whether indexing was successful")
+    video_id: str = Field(..., description="YouTube video ID")
+    chunks_indexed: int = Field(..., description="Number of chunks indexed")
+    message: str = Field(..., description="Status message")
+
+
+class AskYouTubeInput(BaseModel):
+    """Input model for asking questions about YouTube content"""
+    question: str = Field(..., min_length=1, description="Question about YouTube content")
+    video_id: Optional[str] = Field(None, description="Optional: Restrict search to specific video")
+    top_k: int = Field(default=3, ge=1, le=10, description="Number of relevant chunks to retrieve")
+
+
+class YouTubeContext(BaseModel):
+    """Model for retrieved YouTube context"""
+    video_id: str = Field(..., description="YouTube video ID")
+    chunk_text: str = Field(..., description="Relevant text from transcript")
+    timestamp: float = Field(..., description="Timestamp in seconds")
+    relevance_score: float = Field(..., description="Similarity score")
+
+
+class AskYouTubeOutput(BaseModel):
+    """Output model for YouTube Q&A"""
+    success: bool = Field(..., description="Whether the query was successful")
+    question: str = Field(..., description="Original question")
+    answer: str = Field(..., description="Generated answer")
+    contexts: List[YouTubeContext] = Field(default_factory=list, description="Retrieved contexts with timestamps")
+    youtube_links: List[str] = Field(default_factory=list, description="YouTube links with timestamps")
+
+
+# ============================================================================
 # COGNITIVE LAYERS MODELS
 # ============================================================================
 
