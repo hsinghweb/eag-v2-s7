@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 
 # Import YouTube tools
-from server_mcp.tools_youtube import (
+from tools.tools_youtube import (
     extract_video_id,
     fetch_youtube_transcript,
     group_transcript_segments,
