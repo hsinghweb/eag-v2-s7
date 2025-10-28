@@ -229,7 +229,7 @@ async function pollIndexingStatus(videoId) {
 }
 
 /**
- * Ask a question about indexed videos
+ * Ask a question about any indexed videos
  */
 async function askQuestion() {
     const question = questionInput.value.trim();
@@ -249,7 +249,6 @@ async function askQuestion() {
         },
         body: JSON.stringify({ 
                 question: question,
-                video_id: currentVideoId,  // Optional: restrict to current video
                 top_k: 3
         })
       });
