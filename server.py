@@ -71,6 +71,86 @@ logger.info("YouTube RAG Assistant server started")
 logger.info(f"Memory file: {memory_file}")
 
 
+def expand_context_with_surrounding_chunks(top_contexts, memory_layer):
+    """
+    Expand the top matching chunks with their previous and next chunks for better context.
+    
+    Args:
+        top_contexts: List of YouTubeContext objects from FAISS search
+        memory_layer: MemoryLayer instance to access chunk metadata
+        
+    Returns:
+        List of YouTubeContext objects including surrounding chunks
+    """
+    expanded_contexts = []
+    processed_chunks = set()  # To avoid duplicates
+    
+    logger.debug("🔍 Expanding context with surrounding chunks...")
+    
+    for ctx in top_contexts:
+        # Add the original chunk if not already processed
+        chunk_key = f"{ctx.video_id}_{ctx.timestamp}"
+        if chunk_key not in processed_chunks:
+            expanded_contexts.append(ctx)
+            processed_chunks.add(chunk_key)
+            logger.debug(f"✅ Added original chunk: [{ctx.timestamp:.1f}s] {ctx.chunk_text[:50]}...")
+        
+        # Find previous and next chunks for this video
+        video_chunks = []
+        for metadata in memory_layer.youtube_metadata:
+            if metadata['video_id'] == ctx.video_id:
+                video_chunks.append(metadata)
+        
+        # Sort chunks by timestamp
+        video_chunks.sort(key=lambda x: x['start_timestamp'])
+        
+        # Find current chunk index
+        current_idx = None
+        for i, chunk in enumerate(video_chunks):
+            if abs(chunk['start_timestamp'] - ctx.timestamp) < 1.0:  # Within 1 second
+                current_idx = i
+                break
+        
+        if current_idx is not None:
+            # Add previous chunk
+            if current_idx > 0:
+                prev_chunk = video_chunks[current_idx - 1]
+                prev_key = f"{prev_chunk['video_id']}_{prev_chunk['start_timestamp']}"
+                if prev_key not in processed_chunks:
+                    prev_context = YouTubeContext(
+                        video_id=prev_chunk['video_id'],
+                        chunk_text=prev_chunk['chunk_text'],
+                        timestamp=prev_chunk['start_timestamp'],
+                        relevance_score=0.5  # Lower relevance for context chunks
+                    )
+                    expanded_contexts.append(prev_context)
+                    processed_chunks.add(prev_key)
+                    logger.debug(f"📝 Added previous chunk: [{prev_chunk['start_timestamp']:.1f}s] {prev_chunk['chunk_text'][:50]}...")
+            
+            # Add next chunk
+            if current_idx < len(video_chunks) - 1:
+                next_chunk = video_chunks[current_idx + 1]
+                next_key = f"{next_chunk['video_id']}_{next_chunk['start_timestamp']}"
+                if next_key not in processed_chunks:
+                    next_context = YouTubeContext(
+                        video_id=next_chunk['video_id'],
+                        chunk_text=next_chunk['chunk_text'],
+                        timestamp=next_chunk['start_timestamp'],
+                        relevance_score=0.5  # Lower relevance for context chunks
+                    )
+                    expanded_contexts.append(next_context)
+                    processed_chunks.add(next_key)
+                    logger.debug(f"📝 Added next chunk: [{next_chunk['start_timestamp']:.1f}s] {next_chunk['chunk_text'][:50]}...")
+    
+    # Sort expanded contexts by timestamp for better readability
+    expanded_contexts.sort(key=lambda x: x.timestamp)
+    
+    logger.info(f"🔍 Context expansion: {len(top_contexts)} → {len(expanded_contexts)} chunks")
+    logger.debug(f"📊 Expanded context includes {len(expanded_contexts)} total chunks")
+    
+    return expanded_contexts
+
+
 def index_video_async(video_id: str):
     """
     Asynchronous function to index a YouTube video.
@@ -342,7 +422,7 @@ def index_youtube():
             'success': False,
             'message': f'Server error: {str(e)}'
         }), 500
-
+    
 
 @app.route('/api/indexing_status/<video_id>', methods=['GET'])
 def get_indexing_status(video_id):
@@ -361,19 +441,35 @@ def get_indexing_status(video_id):
             "error": "Error message" (if failed)
         }
     """
-    with indexing_lock:
-        if video_id not in indexing_status:
-            return jsonify({
-                'video_id': video_id,
-                'status': 'not_found',
-                'message': 'No indexing found for this video'
-            }), 404
+    try:
+        with indexing_lock:
+            if video_id not in indexing_status:
+                logger.error(f"No indexing found for video {video_id}")
+                return jsonify({
+                    'success': False,
+                    'message': 'No indexing found for this video'
+                }), 404
         
         status_data = indexing_status[video_id].copy()
         status_data['video_id'] = video_id
-        
-        return jsonify(status_data)
-
+        return jsonify({
+            'success': True,
+            'video_id': video_id,
+            'status': status_data['status'],
+            'progress': status_data['progress'],
+            'total_chunks': status_data['total_chunks'],
+            'message': status_data['message'],
+            'start_time': status_data['start_time'],
+            'end_time': status_data['end_time'],
+            'error': status_data['error']
+        })
+    except Exception as e:
+        logger.error(f"Error getting indexing status for video {video_id} - {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'Server error: {str(e)}'
+        }), 500
 
 @app.route('/api/ask_youtube', methods=['POST'])
 def ask_youtube():
@@ -450,11 +546,16 @@ def ask_youtube():
                 'message': 'No relevant content found'
             }), 404
         
-        # Step 4: Generate answer with Gemini
-        # Build context string from top chunks
+        # Step 4: Expand context with previous and next chunks
+        expanded_contexts = expand_context_with_surrounding_chunks(contexts, memory_layer)
+        
+        logger.info(f"🔍 Found {len(contexts)} top chunks, expanded to {len(expanded_contexts)} chunks with context")
+        
+        # Step 5: Generate answer with Gemini
+        # Build context string from expanded chunks
         context_text = "\n\n".join([
             f"[Video {ctx.video_id} at {int(ctx.timestamp)}s]\n{ctx.chunk_text}"
-            for ctx in contexts
+            for ctx in expanded_contexts
         ])
         
         # Create prompt for Gemini
@@ -477,18 +578,19 @@ Please provide a detailed answer based on the context above. If the context does
                 'message': f'Failed to generate answer: {str(e)}'
             }), 500
         
-        # Step 5: Create YouTube links with timestamps
+        logger.info(f"Generated answer with {len(expanded_contexts)} expanded contexts for LLM (original top-3: {len(contexts)})")
+        
+        # Create YouTube links for ORIGINAL top-3 matching chunks only (not expanded context)
         youtube_links = [
             create_youtube_link(ctx.video_id, ctx.timestamp)
-            for ctx in contexts
+            for ctx in contexts  # Use original top-3 contexts for links
         ]
         
-        logger.info(f"Generated answer with {len(contexts)} contexts")
-        
+        # Return only the original top-3 contexts for display, but LLM used expanded context
         return jsonify({
             'success': True,
             'question': question,
-            'answer': answer,
+            'answer': answer,  # Generated using expanded context (up to 9 chunks)
             'contexts': [
                 {
                     'video_id': ctx.video_id,
@@ -496,9 +598,15 @@ Please provide a detailed answer based on the context above. If the context does
                     'timestamp': ctx.timestamp,
                     'relevance_score': ctx.relevance_score
                 }
-                for ctx in contexts
+                for ctx in contexts  # Return only original top-3 for display
             ],
-            'youtube_links': youtube_links
+            'youtube_links': youtube_links,  # Links for top-3 matching chunks only
+            'context_info': {
+                'original_chunks': len(contexts),
+                'expanded_chunks': len(expanded_contexts),
+                'expansion_ratio': f"{len(expanded_contexts)}/{len(contexts)}",
+                'note': 'Answer generated using expanded context, links show top-3 matches only'
+            }
         })
         
     except Exception as e:
