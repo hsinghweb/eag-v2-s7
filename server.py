@@ -398,6 +398,21 @@ def index_youtube():
                     'message': 'Invalid YouTube URL'
                 }), 400
         
+        # Check if video is already indexed
+        logger.info(f"🔍 Checking if video {video_id} is already indexed...")
+        indexed_videos = set()
+        for metadata in memory_layer.youtube_metadata:
+            indexed_videos.add(metadata['video_id'])
+        
+        if video_id in indexed_videos:
+            logger.info(f"✅ Video {video_id} is already indexed")
+            return jsonify({
+                'success': True,
+                'video_id': video_id,
+                'message': 'Video is already indexed and ready for questions',
+                'status': 'already_indexed'
+            })
+        
         # Check if already indexing
         with indexing_lock:
             if video_id in indexing_status:

@@ -134,6 +134,17 @@ async function indexCurrentVideo() {
         const data = await response.json();
         
         if (data.success) {
+            if (data.status === 'already_indexed') {
+                // Video is already indexed, show success message immediately
+                hideLoading();
+                showResult(`
+                    ✅ <strong>Video Already Indexed!</strong><br>
+                    Video ID: ${data.video_id}<br>
+                    <small>You can now ask questions about this video</small>
+                `);
+                return;
+            }
+            
             // Show progress bar
             indexingProgressEl.style.display = 'block';
             progressBarEl.style.width = '0%';
