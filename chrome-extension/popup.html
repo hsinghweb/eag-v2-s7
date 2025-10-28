@@ -220,6 +220,12 @@
       <span id="video-status">Navigate to a YouTube video to index it</span>
     </div>
     <button id="index-btn" disabled>Index This Video</button>
+    <div id="indexing-progress" style="display: none; margin-top: 10px;">
+      <div style="background: #f0f0f0; border-radius: 4px; height: 8px; overflow: hidden;">
+        <div id="progress-bar" style="background: #ff0000; height: 100%; width: 0%; transition: width 0.3s;"></div>
+      </div>
+      <div id="progress-text" style="font-size: 12px; color: #666; margin-top: 4px;">Starting...</div>
+    </div>
   </div>
   
   <!-- Ask Question Section -->

@@ -11,6 +11,9 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import google.generativeai as genai
+import threading
+import time
+from datetime import datetime
 
 # Import YouTube tools
 from server_mcp.tools_youtube import (
@@ -60,8 +63,187 @@ os.makedirs(log_dir, exist_ok=True)
 memory_file = os.path.join(log_dir, "youtube_memory.json")
 memory_layer = MemoryLayer(memory_file=memory_file, load_existing=True)
 
+# Global indexing status tracking
+indexing_status = {}
+indexing_lock = threading.Lock()
+
 logger.info("YouTube RAG Assistant server started")
 logger.info(f"Memory file: {memory_file}")
+
+
+def index_video_async(video_id: str):
+    """
+    Asynchronous function to index a YouTube video.
+    Updates global indexing_status with progress.
+    """
+    global indexing_status
+    
+    try:
+        with indexing_lock:
+            indexing_status[video_id] = {
+                'status': 'started',
+                'progress': 0,
+                'total_chunks': 0,
+                'message': 'Starting transcript fetch...',
+                'start_time': datetime.now().isoformat(),
+                'error': None
+            }
+        
+        logger.info(f"🚀 Starting async indexing for video: {video_id}")
+        
+        # Step 1: Fetch transcript
+        with indexing_lock:
+            indexing_status[video_id]['message'] = 'Fetching transcript...'
+        
+        transcript = fetch_youtube_transcript(video_id)
+        
+        # DEBUG: Print complete transcript data with timestamps
+        logger.debug("=" * 100)
+        logger.debug("📝 COMPLETE YOUTUBE TRANSCRIPT WITH TIMESTAMPS:")
+        logger.debug("=" * 100)
+        for i, segment in enumerate(transcript):
+            timestamp_formatted = f"{int(segment['start']//60):02d}:{int(segment['start']%60):02d}"
+            logger.debug(f"Segment {i+1:3d}: [{timestamp_formatted}] {segment['text']}")
+        logger.debug("=" * 100)
+        logger.debug(f"📊 Total transcript segments: {len(transcript)}")
+        logger.debug("=" * 100)
+        
+        with indexing_lock:
+            indexing_status[video_id]['message'] = f'Fetched {len(transcript)} segments, grouping...'
+        
+        # Step 2: Group into full sentences
+        chunks = group_transcript_segments(transcript, max_duration=30, max_chars=500)
+        
+        # DEBUG: Print all grouped chunks with timestamps
+        logger.debug("=" * 100)
+        logger.debug("📦 ALL GROUPED CHUNKS WITH TIMESTAMPS:")
+        logger.debug("=" * 100)
+        for i, chunk in enumerate(chunks):
+            start_time = f"{int(chunk['start_timestamp']//60):02d}:{int(chunk['start_timestamp']%60):02d}"
+            end_time = f"{int(chunk['end_timestamp']//60):02d}:{int(chunk['end_timestamp']%60):02d}"
+            logger.debug(f"Chunk {i+1:3d}: [{start_time}-{end_time}] {chunk['text']}")
+        logger.debug("=" * 100)
+        logger.debug(f"📊 Total chunks created: {len(chunks)}")
+        logger.debug("=" * 100)
+        
+        if not chunks:
+            with indexing_lock:
+                indexing_status[video_id] = {
+                    'status': 'failed',
+                    'error': 'No transcript chunks generated',
+                    'message': 'Failed to generate chunks'
+                }
+            return
+        
+        with indexing_lock:
+            indexing_status[video_id]['total_chunks'] = len(chunks)
+            indexing_status[video_id]['message'] = f'Generated {len(chunks)} chunks, creating embeddings...'
+        
+        # Step 3: Generate embeddings for each chunk
+        embeddings_list = []
+        youtube_chunks = []
+        
+        logger.info("🔮 Starting embedding generation process...")
+        logger.debug("=" * 100)
+        logger.debug("🔮 EMBEDDING GENERATION PROGRESS:")
+        logger.debug("=" * 100)
+        
+        for idx, chunk in enumerate(chunks):
+            try:
+                # Update progress
+                progress = int((idx / len(chunks)) * 100)
+                with indexing_lock:
+                    indexing_status[video_id]['progress'] = progress
+                    indexing_status[video_id]['message'] = f'Embedding chunk {idx+1}/{len(chunks)}...'
+                
+                # Log detailed embedding progress
+                start_time = f"{int(chunk['start_timestamp']//60):02d}:{int(chunk['start_timestamp']%60):02d}"
+                end_time = f"{int(chunk['end_timestamp']//60):02d}:{int(chunk['end_timestamp']%60):02d}"
+                logger.info(f"🔄 Processing chunk {idx+1}/{len(chunks)}: [{start_time}-{end_time}]")
+                logger.debug(f"📝 Chunk text: {chunk['text'][:100]}...")
+                
+                # Get embedding from Ollama
+                embedding = get_ollama_embedding(chunk['text'])
+                embeddings_list.append(embedding)
+                
+                # Log embedding success with stats
+                logger.debug(f"✅ Chunk {idx+1} embedded successfully (dimension: {len(embedding)})")
+                logger.debug(f"📊 Embedding stats: min={embedding.min():.4f}, max={embedding.max():.4f}, mean={embedding.mean():.4f}")
+                
+                # Create YouTubeTranscriptChunk object
+                youtube_chunk = YouTubeTranscriptChunk(
+                    video_id=video_id,
+                    chunk_text=chunk['text'],
+                    start_timestamp=chunk['start_timestamp'],
+                    end_timestamp=chunk['end_timestamp'],
+                    chunk_index=idx
+                )
+                youtube_chunks.append(youtube_chunk)
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to embed chunk {idx+1}: {e}")
+                continue
+        
+        logger.debug("=" * 100)
+        logger.debug(f"🎉 Embedding generation completed: {len(embeddings_list)}/{len(chunks)} chunks")
+        logger.debug("=" * 100)
+        
+        if not embeddings_list:
+            with indexing_lock:
+                indexing_status[video_id] = {
+                    'status': 'failed',
+                    'error': 'Failed to generate embeddings. Is Ollama running?',
+                    'message': 'Embedding generation failed'
+                }
+            return
+        
+        # Step 4: Add to FAISS index
+        with indexing_lock:
+            indexing_status[video_id]['message'] = 'Adding to FAISS index...'
+        
+        logger.info("🗄️ Adding chunks to FAISS vector store...")
+        embeddings_array = np.stack(embeddings_list)
+        logger.info(f"📊 Embeddings array shape: {embeddings_array.shape}")
+        
+        chunks_added = memory_layer.add_youtube_chunks(youtube_chunks, embeddings_array)
+        logger.info(f"✅ Added {chunks_added} chunks to FAISS index")
+        
+        # Step 5: Save index
+        logger.info("💾 Saving index to disk...")
+        memory_layer.save_memory()
+        logger.info("✅ Index saved successfully")
+        
+        # Get final stats
+        stats = memory_layer.get_youtube_stats()
+        logger.info(f"📊 Final index stats: {stats}")
+        
+        # Final success status
+        with indexing_lock:
+            indexing_status[video_id] = {
+                'status': 'completed',
+                'progress': 100,
+                'total_chunks': chunks_added,
+                'message': f'Successfully indexed {chunks_added} chunks',
+                'end_time': datetime.now().isoformat(),
+                'error': None
+            }
+        
+        logger.info("=" * 100)
+        logger.info(f"🎉 ASYNC INDEXING COMPLETED FOR VIDEO {video_id}")
+        logger.info(f"📈 Total chunks indexed: {chunks_added}")
+        logger.info(f"📊 Total chunks in index: {stats['total_chunks']}")
+        logger.info(f"🎬 Total videos indexed: {stats['unique_videos']}")
+        logger.info("=" * 100)
+        
+    except Exception as e:
+        logger.error(f"💥 Async indexing failed for {video_id}: {str(e)}")
+        with indexing_lock:
+            indexing_status[video_id] = {
+                'status': 'failed',
+                'error': str(e),
+                'message': f'Indexing failed: {str(e)}',
+                'end_time': datetime.now().isoformat()
+            }
 
 
 @app.route('/health')
@@ -77,7 +259,7 @@ def health_check():
 @app.route('/api/index_youtube', methods=['POST'])
 def index_youtube():
     """
-    Index a YouTube video by fetching transcript, chunking, and embedding.
+    Start asynchronous indexing of a YouTube video.
     
     Request body:
         {
@@ -89,12 +271,12 @@ def index_youtube():
         {
             "success": true,
             "video_id": "dQw4w9WgXcQ",
-            "chunks_indexed": 25,
-            "message": "Successfully indexed video"
+            "message": "Indexing started",
+            "status": "started"
         }
     """
     logger.info("=" * 100)
-    logger.info("🚀 STARTING YOUTUBE VIDEO INDEXING")
+    logger.info("🚀 STARTING ASYNC YOUTUBE VIDEO INDEXING")
     logger.info("=" * 100)
     
     try:
@@ -122,106 +304,37 @@ def index_youtube():
                     'message': 'Invalid YouTube URL'
                 }), 400
         
-        logger.info(f"🎬 Starting indexing process for video: {video_id}")
+        # Check if already indexing
+        with indexing_lock:
+            if video_id in indexing_status:
+                current_status = indexing_status[video_id]['status']
+                if current_status in ['started', 'in_progress']:
+                    logger.info(f"ℹ️ Video {video_id} is already being indexed")
+                    return jsonify({
+                        'success': True,
+                        'video_id': video_id,
+                        'message': 'Indexing already in progress',
+                        'status': current_status
+                    })
         
-        # Step 1: Fetch transcript
-        logger.info("📝 STEP 1: Fetching YouTube transcript...")
-        try:
-            transcript = fetch_youtube_transcript(video_id)
-            logger.info(f"✅ Transcript fetched successfully: {len(transcript)} segments")
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch transcript: {str(e)}")
-            return jsonify({
-                'success': False,
-                'message': f'Failed to fetch transcript: {str(e)}'
-            }), 400
+        logger.info(f"🎬 Starting async indexing for video: {video_id}")
         
-        # Step 2: Group into full sentences
-        logger.info("🔄 STEP 2: Grouping transcript into complete sentences...")
-        chunks = group_transcript_segments(transcript, max_duration=30, max_chars=500)
+        # Start async indexing in background thread
+        thread = threading.Thread(target=index_video_async, args=(video_id,))
+        thread.daemon = True
+        thread.start()
         
-        if not chunks:
-            logger.error("❌ No transcript chunks generated")
-            return jsonify({
-                'success': False,
-                'message': 'No transcript chunks generated'
-            }), 400
-        
-        logger.info(f"✅ Transcript grouped into {len(chunks)} complete sentence chunks")
-        
-        # Step 3: Generate embeddings for each chunk
-        logger.info("🔮 STEP 3: Generating embeddings for each chunk...")
-        embeddings_list = []
-        youtube_chunks = []
-        
-        for idx, chunk in enumerate(chunks):
-            logger.info(f"🔄 Processing chunk {idx+1}/{len(chunks)}: [{chunk['start_timestamp']:.1f}s-{chunk['end_timestamp']:.1f}s]")
-            logger.debug(f"📝 Chunk text: {chunk['text']}")
-            
-            try:
-                # Get embedding from Ollama
-                embedding = get_ollama_embedding(chunk['text'])
-                embeddings_list.append(embedding)
-                
-                # Create YouTubeTranscriptChunk object
-                youtube_chunk = YouTubeTranscriptChunk(
-                    video_id=video_id,
-                    chunk_text=chunk['text'],
-                    start_timestamp=chunk['start_timestamp'],
-                    end_timestamp=chunk['end_timestamp'],
-                    chunk_index=idx
-                )
-                youtube_chunks.append(youtube_chunk)
-                
-                logger.debug(f"✅ Chunk {idx+1} embedded successfully (dimension: {len(embedding)})")
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to embed chunk {idx+1}: {e}")
-                continue
-        
-        if not embeddings_list:
-            logger.error("❌ No embeddings generated. Check Ollama connection.")
-            return jsonify({
-                'success': False,
-                'message': 'Failed to generate embeddings. Is Ollama running?'
-            }), 500
-        
-        logger.info(f"✅ Generated {len(embeddings_list)} embeddings successfully")
-        
-        # Step 4: Add to FAISS index
-        logger.info("🗄️ STEP 4: Adding chunks to FAISS vector store...")
-        embeddings_array = np.stack(embeddings_list)
-        logger.info(f"📊 Embeddings array shape: {embeddings_array.shape}")
-        
-        chunks_added = memory_layer.add_youtube_chunks(youtube_chunks, embeddings_array)
-        logger.info(f"✅ Added {chunks_added} chunks to FAISS index")
-        
-        # Step 5: Save index
-        logger.info("💾 STEP 5: Saving index to disk...")
-        memory_layer.save_memory()
-        logger.info("✅ Index saved successfully")
-        
-        # Get final stats
-        stats = memory_layer.get_youtube_stats()
-        logger.info(f"📊 Final index stats: {stats}")
-        
-        logger.info("=" * 100)
-        logger.info(f"🎉 SUCCESSFULLY INDEXED VIDEO {video_id}")
-        logger.info(f"📈 Total chunks indexed: {chunks_added}")
-        logger.info(f"📊 Total chunks in index: {stats['total_chunks']}")
-        logger.info(f"🎬 Total videos indexed: {stats['unique_videos']}")
-        logger.info("=" * 100)
-        
+        # Return immediately with started status
         return jsonify({
             'success': True,
             'video_id': video_id,
-            'chunks_indexed': chunks_added,
-            'message': f'Successfully indexed {chunks_added} chunks'
+            'message': 'Indexing started in background',
+            'status': 'started'
         })
         
     except Exception as e:
         logger.error("=" * 100)
-        logger.error(f"💥 ERROR INDEXING VIDEO: {str(e)}")
+        logger.error(f"💥 ERROR STARTING INDEXING: {str(e)}")
         logger.error("=" * 100)
         logger.error(traceback.format_exc())
         logger.error("=" * 100)
@@ -229,6 +342,37 @@ def index_youtube():
             'success': False,
             'message': f'Server error: {str(e)}'
         }), 500
+
+
+@app.route('/api/indexing_status/<video_id>', methods=['GET'])
+def get_indexing_status(video_id):
+    """
+    Get the current indexing status for a video.
+    
+    Response:
+        {
+            "video_id": "dQw4w9WgXcQ",
+            "status": "started|in_progress|completed|failed",
+            "progress": 45,
+            "total_chunks": 100,
+            "message": "Embedding chunk 45/100...",
+            "start_time": "2025-01-27T20:15:00",
+            "end_time": "2025-01-27T20:18:00" (if completed/failed),
+            "error": "Error message" (if failed)
+        }
+    """
+    with indexing_lock:
+        if video_id not in indexing_status:
+            return jsonify({
+                'video_id': video_id,
+                'status': 'not_found',
+                'message': 'No indexing found for this video'
+            }), 404
+        
+        status_data = indexing_status[video_id].copy()
+        status_data['video_id'] = video_id
+        
+        return jsonify(status_data)
 
 
 @app.route('/api/ask_youtube', methods=['POST'])

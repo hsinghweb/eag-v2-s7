@@ -15,6 +15,9 @@ const questionInput = document.getElementById('question-input');
 const loaderEl = document.getElementById('loader');
 const loaderText = document.getElementById('loader-text');
 const resultEl = document.getElementById('result');
+const indexingProgressEl = document.getElementById('indexing-progress');
+const progressBarEl = document.getElementById('progress-bar');
+const progressTextEl = document.getElementById('progress-text');
 
 // Initialize popup
 document.addEventListener('DOMContentLoaded', async () => {
@@ -115,7 +118,7 @@ async function indexCurrentVideo() {
         return;
     }
     
-    showLoading('Fetching transcript and indexing...');
+    showLoading('Starting indexing...');
     
     try {
         const response = await fetch(`${API_BASE}/index_youtube`, {
@@ -131,22 +134,87 @@ async function indexCurrentVideo() {
         const data = await response.json();
         
         if (data.success) {
-            showResult(`
-                ✅ <strong>Successfully indexed!</strong><br>
-                Video ID: ${data.video_id}<br>
-                Chunks indexed: ${data.chunks_indexed}<br>
-                <small>You can now ask questions about this video</small>
-            `);
+            // Show progress bar
+            indexingProgressEl.style.display = 'block';
+            progressBarEl.style.width = '0%';
+            progressTextEl.textContent = 'Starting indexing...';
+            
+            // Hide the main loader
+            hideLoading();
+            
+            // Start polling for status updates
+            pollIndexingStatus(data.video_id);
         } else {
             showResult(`❌ ${data.message}`, true);
+            hideLoading();
         }
         
     } catch (error) {
         console.error('Indexing error:', error);
         showResult(`❌ Failed to connect to server. Make sure the Flask server is running on port 5000.`, true);
-    } finally {
         hideLoading();
     }
+}
+
+/**
+ * Poll indexing status until completion
+ */
+async function pollIndexingStatus(videoId) {
+    const maxAttempts = 300; // 5 minutes max
+    let attempts = 0;
+    
+    const poll = async () => {
+        try {
+            const response = await fetch(`${API_BASE}/indexing_status/${videoId}`);
+            const status = await response.json();
+            
+            if (status.status === 'completed') {
+                // Hide progress bar and show success
+                indexingProgressEl.style.display = 'none';
+                showResult(`
+                    🎉 <strong>Indexing Completed!</strong><br>
+                    Video ID: ${status.video_id}<br>
+                    Chunks indexed: ${status.total_chunks}<br>
+                    <small>You can now ask questions about this video</small>
+                `);
+                return;
+            } else if (status.status === 'failed') {
+                // Hide progress bar and show error
+                indexingProgressEl.style.display = 'none';
+                showResult(`❌ Indexing failed: ${status.error || status.message}`, true);
+                return;
+            } else if (status.status === 'started' || status.status === 'in_progress') {
+                // Update progress bar
+                const progress = status.progress || 0;
+                const message = status.message || 'Processing...';
+                
+                progressBarEl.style.width = `${progress}%`;
+                progressTextEl.textContent = `${message} (${progress}%)`;
+                
+                // Continue polling
+                attempts++;
+                if (attempts < maxAttempts) {
+                    setTimeout(poll, 2000); // Poll every 2 seconds
+  } else {
+                    indexingProgressEl.style.display = 'none';
+                    showResult('⏰ Indexing is taking longer than expected. Please check server logs.', true);
+                }
+            }
+            
+        } catch (error) {
+            console.error('Status polling error:', error);
+            attempts++;
+            if (attempts < maxAttempts) {
+                setTimeout(poll, 2000);
+            } else {
+                showResult('❌ Lost connection to server during indexing', true);
+                hideLoading();
+            }
+        }
+    };
+    
+    // Start polling
+    poll();
 }
 
 /**
@@ -157,24 +225,24 @@ async function askQuestion() {
     
     if (!question) {
         showResult('Please enter a question', true);
-        return;
+      return;
     }
-    
+
     showLoading('Searching and generating answer...');
-    
+
     try {
         const response = await fetch(`${API_BASE}/ask_youtube`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
                 question: question,
                 video_id: currentVideoId,  // Optional: restrict to current video
                 top_k: 3
-            })
-        });
-        
+        })
+      });
+
         const data = await response.json();
         
         if (data.success) {
@@ -208,8 +276,8 @@ async function askQuestion() {
             showResult(resultHTML);
         } else {
             showResult(`❌ ${data.message}`, true);
-        }
-        
+      }
+
     } catch (error) {
         console.error('Question error:', error);
         showResult(`❌ Failed to connect to server. Make sure the Flask server is running on port 5000.`, true);
@@ -248,5 +316,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         currentVideoId = request.videoId;
         videoStatusEl.innerHTML = `Video ID: <span class="video-id">${currentVideoId}</span>`;
         indexBtn.disabled = false;
-    }
+  }
 });
