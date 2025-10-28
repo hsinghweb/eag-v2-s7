@@ -12,9 +12,11 @@ from .models import (
     PerceptionOutput,
     MemoryRetrievalResult,
     DecisionOutput,
-    ActionStep
+    ActionStep,
+    YouTubePerceptionOutput,
+    YouTubeDecisionOutput
 )
-from .prompts import DECISION_PROMPT
+from .prompts import DECISION_PROMPT, YOUTUBE_DECISION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -231,4 +233,91 @@ class DecisionLayer:
             confidence=1.0,
             should_continue=False
         )
+
+    def decide_youtube_question(
+        self,
+        perception: YouTubePerceptionOutput,
+        indexed_videos: List[str] = None
+    ) -> YouTubeDecisionOutput:
+        """
+        Plan execution for YouTube question answering.
+        
+        Args:
+            perception: YouTube perception analysis
+            indexed_videos: List of available indexed video IDs
+            
+        Returns:
+            YouTubeDecisionOutput: Execution plan for answering the question
+        """
+        logger.info("[DECISION] Planning YouTube question execution")
+        
+        try:
+            # Format indexed videos for context
+            if indexed_videos:
+                videos_text = "\n".join([f"- {video_id}" for video_id in indexed_videos])
+            else:
+                videos_text = "No videos indexed yet"
+            
+            # Format the YouTube decision prompt
+            prompt = YOUTUBE_DECISION_PROMPT.format(
+                intent=perception.intent,
+                question_type=perception.question_type,
+                extracted_concepts=", ".join(perception.extracted_concepts),
+                context_needed=perception.context_needed,
+                search_strategy=perception.search_strategy,
+                confidence=perception.confidence,
+                indexed_videos=videos_text
+            )
+            
+            logger.debug("=" * 80)
+            logger.debug("YOUTUBE_DECISION_PROMPT:")
+            logger.debug("=" * 80)
+            logger.debug(prompt)
+            logger.debug("=" * 80)
+            
+            # Call LLM for decision planning
+            logger.debug("Calling LLM for YouTube decision planning...")
+            response = self.model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            logger.debug(f"YouTube decision LLM response: {response_text}")
+            
+            # Parse JSON response
+            if response_text.startswith("```"):
+                lines = response_text.split('\n')
+                json_lines = [line for line in lines if line.strip() and not line.strip().startswith('```')]
+                response_text = '\n'.join(json_lines)
+            
+            decision_data = json.loads(response_text)
+            
+            # Validate and create Pydantic model
+            decision = YouTubeDecisionOutput(**decision_data)
+            
+            logger.info(f"[DECISION] YouTube execution plan created - Plan: {decision.plan}")
+            logger.debug(f"Execution steps: {decision.steps}")
+            
+            return decision
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse YouTube decision JSON: {e}")
+            logger.error(f"Raw response: {response_text}")
+            
+            # Return fallback decision
+            return YouTubeDecisionOutput(
+                plan="Answer question using semantic search",
+                steps=[
+                    "Search FAISS index with question",
+                    "Retrieve top 3 relevant chunks",
+                    "Expand context with surrounding chunks",
+                    "Generate answer using Gemini"
+                ],
+                search_query=perception.extracted_concepts[0] if perception.extracted_concepts else "general question",
+                top_k=3,
+                context_expansion=True,
+                reasoning=f"Fallback decision due to JSON parsing error: {e}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in YouTube decision planning: {e}")
+            raise ValueError(f"Decision planning failed: {e}")
 

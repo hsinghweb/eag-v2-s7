@@ -7,8 +7,8 @@ It translates raw user input into structured information using an LLM.
 import logging
 import json
 import google.generativeai as genai
-from .models import PerceptionOutput
-from .prompts import PERCEPTION_PROMPT
+from .models import PerceptionOutput, YouTubePerceptionOutput
+from .prompts import PERCEPTION_PROMPT, YOUTUBE_PERCEPTION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -128,4 +128,78 @@ class PerceptionLayer:
             f"Result obtained: {result}"
         ]
         return facts
+
+    def perceive_youtube_question(self, question: str, indexed_videos: list = None) -> YouTubePerceptionOutput:
+        """
+        Analyze YouTube question and extract structured information.
+        
+        Args:
+            question: User's question about YouTube content
+            indexed_videos: List of available indexed video IDs
+            
+        Returns:
+            YouTubePerceptionOutput: Structured perception with question analysis
+        """
+        logger.info(f"[PERCEIVE] Analyzing YouTube question: {question}")
+        
+        try:
+            # Format indexed videos for context
+            if indexed_videos:
+                videos_text = "\n".join([f"- {video_id}" for video_id in indexed_videos])
+            else:
+                videos_text = "No videos indexed yet"
+            
+            # Format the YouTube perception prompt
+            prompt = YOUTUBE_PERCEPTION_PROMPT.format(
+                question=question,
+                indexed_videos=videos_text
+            )
+            
+            logger.debug("=" * 80)
+            logger.debug("YOUTUBE_PERCEPTION_PROMPT:")
+            logger.debug("=" * 80)
+            logger.debug(prompt)
+            logger.debug("=" * 80)
+            
+            # Call LLM for perception
+            logger.debug("Calling LLM for YouTube question perception...")
+            response = self.model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            logger.debug(f"YouTube perception LLM response: {response_text}")
+            
+            # Parse JSON response
+            if response_text.startswith("```"):
+                lines = response_text.split('\n')
+                json_lines = [line for line in lines if line.strip() and not line.strip().startswith('```')]
+                response_text = '\n'.join(json_lines)
+            
+            perception_data = json.loads(response_text)
+            
+            # Validate and create Pydantic model
+            perception = YouTubePerceptionOutput(**perception_data)
+            
+            logger.info(f"[PERCEIVE] YouTube question analyzed - Intent: {perception.intent}, Type: {perception.question_type}")
+            logger.debug(f"Extracted concepts: {perception.extracted_concepts}")
+            
+            return perception
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse YouTube perception JSON: {e}")
+            logger.error(f"Raw response: {response_text}")
+            
+            # Return fallback perception
+            return YouTubePerceptionOutput(
+                intent="answer_question",
+                question_type="general",
+                extracted_concepts=[question],
+                context_needed="general",
+                search_strategy="semantic_search",
+                confidence=0.5,
+                reasoning=f"Fallback perception due to JSON parsing error: {e}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in YouTube perception: {e}")
+            raise ValueError(f"Perception failed: {e}")
 

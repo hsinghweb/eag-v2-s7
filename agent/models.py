@@ -328,3 +328,35 @@ class CognitiveState(BaseModel):
     action_results: List[ActionResult] = Field(default_factory=list)
     iteration: int = Field(default=0, ge=0)
     complete: bool = Field(default=False)
+
+
+# YOUTUBE-SPECIFIC MODELS
+class YouTubePerceptionOutput(BaseModel):
+    """Output model for YouTube question perception"""
+    intent: str = Field(..., description="Intent of the question (answer_question, summarize, explain_concept, etc.)")
+    question_type: str = Field(..., description="Type of question (general, specific, conceptual, factual)")
+    extracted_concepts: List[str] = Field(..., description="Key concepts extracted from the question")
+    context_needed: str = Field(..., description="Type of context needed (general, specific_video, timestamp)")
+    search_strategy: str = Field(..., description="Recommended search strategy (semantic_search, keyword_search, hybrid)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in perception analysis")
+    reasoning: str = Field(..., description="Reasoning behind the perception analysis")
+
+
+class YouTubeDecisionOutput(BaseModel):
+    """Output model for YouTube question decision planning"""
+    plan: str = Field(..., description="Execution plan for answering the question")
+    steps: List[str] = Field(..., description="Step-by-step execution plan")
+    search_query: str = Field(..., description="Optimized search query for FAISS")
+    top_k: int = Field(default=3, ge=1, le=10, description="Number of chunks to retrieve")
+    context_expansion: bool = Field(default=True, description="Whether to expand context with surrounding chunks")
+    reasoning: str = Field(..., description="Reasoning behind the decision")
+
+
+class YouTubeActionResult(BaseModel):
+    """Output model for YouTube question action results"""
+    success: bool = Field(..., description="Whether the action was successful")
+    answer: str = Field(..., description="Generated answer")
+    contexts: List[YouTubeContext] = Field(..., description="Retrieved contexts")
+    youtube_links: List[str] = Field(..., description="YouTube links with timestamps")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in the answer")
+    reasoning: str = Field(..., description="Reasoning behind the result")

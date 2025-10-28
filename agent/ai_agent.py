@@ -618,6 +618,139 @@ class CognitiveAgent:
                 full_response=f"Query: {query}\nError: {str(e)}"
             )
 
+    async def process_youtube_question(
+        self, 
+        question: str, 
+        memory_layer: MemoryLayer,
+        gemini_model: genai.GenerativeModel
+    ) -> Dict[str, Any]:
+        """
+        Process YouTube question using cognitive layers.
+        
+        Args:
+            question: User's question about YouTube content
+            memory_layer: Memory layer with FAISS index
+            gemini_model: Gemini model for answer generation
+            
+        Returns:
+            Dictionary with answer and metadata
+        """
+        logger.info("=" * 80)
+        logger.info("🎬 PROCESSING YOUTUBE QUESTION WITH COGNITIVE LAYERS")
+        logger.info("=" * 80)
+        logger.info(f"Question: {question}")
+        
+        try:
+            # Step 1: Perception Layer - Analyze the question
+            logger.info("👁️ PERCEPTION LAYER: Analyzing question...")
+            indexed_videos = list({meta['video_id'] for meta in memory_layer.youtube_metadata})
+            perception = self.perception.perceive_youtube_question(question, indexed_videos)
+            
+            logger.info("Perception Result:")
+            logger.info(f"  - Intent: {perception.intent}")
+            logger.info(f"  - Question Type: {perception.question_type}")
+            logger.info(f"  - Extracted Concepts: {perception.extracted_concepts}")
+            logger.info(f"  - Search Strategy: {perception.search_strategy}")
+            logger.info(f"  - Confidence: {perception.confidence}")
+            
+            # Step 2: Decision Layer - Plan execution
+            logger.info("🧭 DECISION LAYER: Planning execution...")
+            decision = self.decision.decide_youtube_question(perception, indexed_videos)
+            
+            logger.info("Decision Result:")
+            logger.info(f"  - Plan: {decision.plan}")
+            logger.info(f"  - Search Query: {decision.search_query}")
+            logger.info(f"  - Top K: {decision.top_k}")
+            logger.info(f"  - Context Expansion: {decision.context_expansion}")
+            
+            # Step 3: Action Layer - Execute the plan
+            logger.info("🎯 ACTION LAYER: Executing plan...")
+            action_result = self.action.execute_youtube_question(
+                decision, memory_layer, gemini_model, question
+            )
+            
+            logger.info("Action Result:")
+            logger.info(f"  - Success: {action_result.success}")
+            logger.info(f"  - Answer Length: {len(action_result.answer)}")
+            logger.info(f"  - Contexts Found: {len(action_result.contexts)}")
+            logger.info(f"  - YouTube Links: {len(action_result.youtube_links)}")
+            logger.info(f"  - Confidence: {action_result.confidence}")
+            
+            # Step 4: Store facts in memory
+            logger.info("🧠 MEMORY LAYER: Storing facts...")
+            facts_to_store = [
+                f"User asked: {question}",
+                f"Question type: {perception.question_type}",
+                f"Intent: {perception.intent}",
+                f"Concepts: {', '.join(perception.extracted_concepts)}",
+                f"Answer provided: {action_result.success}"
+            ]
+            
+            for fact in facts_to_store:
+                self.memory.store_fact(fact)
+            
+            # Prepare response
+            response = {
+                'success': action_result.success,
+                'question': question,
+                'answer': action_result.answer,
+                'contexts': [
+                    {
+                        'video_id': ctx.video_id,
+                        'chunk_text': ctx.chunk_text,
+                        'timestamp': ctx.timestamp,
+                        'relevance_score': ctx.relevance_score
+                    }
+                    for ctx in action_result.contexts
+                ],
+                'youtube_links': action_result.youtube_links,
+                'cognitive_analysis': {
+                    'perception': {
+                        'intent': perception.intent,
+                        'question_type': perception.question_type,
+                        'extracted_concepts': perception.extracted_concepts,
+                        'search_strategy': perception.search_strategy,
+                        'confidence': perception.confidence
+                    },
+                    'decision': {
+                        'plan': decision.plan,
+                        'search_query': decision.search_query,
+                        'top_k': decision.top_k,
+                        'context_expansion': decision.context_expansion
+                    },
+                    'action': {
+                        'success': action_result.success,
+                        'confidence': action_result.confidence,
+                        'reasoning': action_result.reasoning
+                    }
+                }
+            }
+            
+            logger.info("=" * 80)
+            logger.info("🎉 YOUTUBE QUESTION PROCESSING COMPLETED")
+            logger.info("=" * 80)
+            logger.info(f"Final Answer: {action_result.answer[:100]}...")
+            logger.info(f"Total Contexts: {len(action_result.contexts)}")
+            logger.info(f"YouTube Links: {len(action_result.youtube_links)}")
+            logger.info("=" * 80)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"[AGENT] Error in YouTube question processing: {e}")
+            logger.error(traceback.format_exc())
+            
+            return {
+                'success': False,
+                'question': question,
+                'answer': f"Error processing question: {str(e)}",
+                'contexts': [],
+                'youtube_links': [],
+                'cognitive_analysis': {
+                    'error': str(e)
+                }
+            }
+
 
 async def main(query: str, preferences: Optional[Dict[str, Any]] = None):
     """

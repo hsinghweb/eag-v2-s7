@@ -37,6 +37,12 @@ from agent.models import (
 # Import memory layer
 from agent.memory import MemoryLayer
 
+# Import cognitive layers for YouTube questions
+from agent.ai_agent import CognitiveAgent
+from agent.perception import PerceptionLayer
+from agent.decision import DecisionLayer
+from agent.action import ActionLayer
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -62,6 +68,11 @@ log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
 memory_file = os.path.join(log_dir, "youtube_memory.json")
 memory_layer = MemoryLayer(memory_file=memory_file, load_existing=True)
+
+# Initialize cognitive layers for YouTube questions
+perception_layer = PerceptionLayer(gemini_model)
+decision_layer = DecisionLayer(gemini_model)
+action_layer = ActionLayer(session=None, tools=[])  # No MCP tools needed for YouTube
 
 # Global indexing status tracking
 indexing_status = {}
@@ -503,13 +514,11 @@ def get_indexing_status(video_id):
 @app.route('/api/ask_youtube', methods=['POST'])
 def ask_youtube():
     """
-    Ask a question about indexed YouTube content.
+    Ask a question about indexed YouTube content using cognitive layers.
     
     Request body:
         {
-            "question": "What is the main topic?",
-            "video_id": "dQw4w9WgXcQ",  // Optional: restrict to specific video
-            "top_k": 3  // Optional: number of chunks to retrieve
+            "question": "What is the main topic?"
         }
     
     Response:
@@ -517,25 +526,18 @@ def ask_youtube():
             "success": true,
             "question": "What is the main topic?",
             "answer": "The video discusses...",
-            "contexts": [
-                {
-                    "video_id": "dQw4w9WgXcQ",
-                    "chunk_text": "...",
-                    "timestamp": 45.2,
-                    "relevance_score": 0.95
-                }
-            ],
-            "youtube_links": [
-                "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=45s"
-            ]
+            "contexts": [...],
+            "youtube_links": [...],
+            "cognitive_analysis": {
+                "perception": {...},
+                "decision": {...},
+                "action": {...}
+            }
         }
     """
     try:
         data = request.get_json()
-        
         question = data.get('question')
-        video_id = data.get('video_id')
-        top_k = data.get('top_k', 3)
         
         if not question:
             return jsonify({
@@ -543,9 +545,9 @@ def ask_youtube():
                 'message': 'Question is required'
             }), 400
         
-        logger.info(f"Question: {question}")
+        logger.info(f"🎬 Processing YouTube question with cognitive layers: {question}")
         
-        # Step 1: Check if index is empty
+        # Check if index is empty
         stats = memory_layer.get_youtube_stats()
         if stats['total_chunks'] == 0:
             return jsonify({
@@ -553,93 +555,33 @@ def ask_youtube():
                 'message': 'No YouTube videos indexed yet. Please index a video first.'
             }), 400
         
-        # Step 2: Embed the question
-        try:
-            question_embedding = get_ollama_embedding(question)
-        except Exception as e:
-            return jsonify({
-                'success': False,
-                'message': f'Failed to embed question. Is Ollama running? Error: {str(e)}'
-            }), 500
+        # Use cognitive layers to process the question
+        import asyncio
         
-        # Step 3: Search for relevant chunks
-        contexts = memory_layer.search_youtube_content(
-            query_embedding=question_embedding,
-            top_k=top_k,
-            video_id_filter=video_id
+        # Create cognitive agent instance
+        cognitive_agent = CognitiveAgent(
+            session=None,  # No MCP session needed
+            tools=[],      # No MCP tools needed
+            preferences={},
+            memory_file=memory_file
         )
         
-        if not contexts:
-            return jsonify({
-                'success': False,
-                'message': 'No relevant content found'
-            }), 404
-        
-        # Step 4: Expand context with previous and next chunks
-        expanded_contexts = expand_context_with_surrounding_chunks(contexts, memory_layer)
-        
-        logger.info(f"🔍 Found {len(contexts)} top chunks, expanded to {len(expanded_contexts)} chunks with context")
-        
-        # Step 5: Generate answer with Gemini
-        # Build context string from expanded chunks
-        context_text = "\n\n".join([
-            f"[Video {ctx.video_id} at {int(ctx.timestamp)}s]\n{ctx.chunk_text}"
-            for ctx in expanded_contexts
-        ])
-        
-        # Create prompt for Gemini
-        prompt = f"""You are a helpful assistant that answers questions about YouTube videos based on their transcripts.
-
-Context from video transcript(s):
-{context_text}
-
-Question: {question}
-
-Please provide a detailed answer based on the context above. If the context doesn't contain enough information to fully answer the question, say so."""
-        
+        # Process question using cognitive layers
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            response = gemini_model.generate_content(prompt)
-            answer = response.text.strip()
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
-            return jsonify({
-                'success': False,
-                'message': f'Failed to generate answer: {str(e)}'
-            }), 500
+            response = loop.run_until_complete(
+                cognitive_agent.process_youtube_question(question, memory_layer, gemini_model)
+            )
+        finally:
+            loop.close()
         
-        logger.info(f"Generated answer with {len(expanded_contexts)} expanded contexts for LLM (original top-3: {len(contexts)})")
+        logger.info("✅ Cognitive processing completed successfully")
         
-        # Create YouTube links for ORIGINAL top-3 matching chunks only (not expanded context)
-        youtube_links = [
-            create_youtube_link(ctx.video_id, ctx.timestamp)
-            for ctx in contexts  # Use original top-3 contexts for links
-        ]
-        
-        # Return only the original top-3 contexts for display, but LLM used expanded context
-        return jsonify({
-            'success': True,
-            'question': question,
-            'answer': answer,  # Generated using expanded context (up to 9 chunks)
-            'contexts': [
-                {
-                    'video_id': ctx.video_id,
-                    'chunk_text': ctx.chunk_text,
-                    'timestamp': ctx.timestamp,
-                    'relevance_score': ctx.relevance_score
-                }
-                for ctx in contexts  # Return only original top-3 for display
-            ],
-            'youtube_links': youtube_links,  # Links for top-3 matching chunks only
-            'context_info': {
-                'original_chunks': len(contexts),
-                'expanded_chunks': len(expanded_contexts),
-                'expansion_ratio': f"{len(expanded_contexts)}/{len(contexts)}",
-                'note': 'Answer generated using expanded context, links show top-3 matches only'
-            }
-        })
+        return jsonify(response)
         
     except Exception as e:
-        logger.error(f"Error answering question: {str(e)}")
+        logger.error(f"Error in cognitive YouTube question processing: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
