@@ -175,7 +175,21 @@ def index_video_async(video_id: str):
         with indexing_lock:
             indexing_status[video_id]['message'] = 'Fetching transcript...'
         
-        transcript = fetch_youtube_transcript(video_id)
+        try:
+            transcript = fetch_youtube_transcript(video_id)
+        except Exception as e:
+            logger.error(f"Transcript fetch failed for {video_id}: {e}")
+            with indexing_lock:
+                indexing_status[video_id] = {
+                    'status': 'failed',
+                    'progress': 0,
+                    'total_chunks': 0,
+                    'message': 'No English transcript available for this video',
+                    'start_time': indexing_status[video_id].get('start_time'),
+                    'end_time': datetime.now().isoformat(),
+                    'error': 'no_transcript'
+                }
+            return
         
         # DEBUG: Print complete transcript data with timestamps
         logger.debug("=" * 100)
@@ -455,13 +469,13 @@ def get_indexing_status(video_id):
         return jsonify({
             'success': True,
             'video_id': video_id,
-            'status': status_data['status'],
-            'progress': status_data['progress'],
-            'total_chunks': status_data['total_chunks'],
-            'message': status_data['message'],
-            'start_time': status_data['start_time'],
-            'end_time': status_data['end_time'],
-            'error': status_data['error']
+            'status': status_data.get('status'),
+            'progress': status_data.get('progress', 0),
+            'total_chunks': status_data.get('total_chunks', 0),
+            'message': status_data.get('message', ''),
+            'start_time': status_data.get('start_time'),
+            'end_time': status_data.get('end_time'),
+            'error': status_data.get('error')
         })
     except Exception as e:
         logger.error(f"Error getting indexing status for video {video_id} - {str(e)}")
@@ -470,7 +484,7 @@ def get_indexing_status(video_id):
             'success': False,
             'message': f'Server error: {str(e)}'
         }), 500
-
+    
 @app.route('/api/ask_youtube', methods=['POST'])
 def ask_youtube():
     """
