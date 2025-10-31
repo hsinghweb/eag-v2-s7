@@ -71,20 +71,20 @@ ollama serve
 
 ### 2. Clone & Setup Project
 
-   ```bash
+```bash
 # Clone repository
-   git clone [your-repository-url]
+git clone [your-repository-url]
 cd eag-v2-s7
 
 # Create virtual environment (recommended: use uv)
-   uv venv
-   uv pip install -r requirements.txt
+uv venv
+uv pip install -e .
 
 # Or use standard venv
-   python -m venv venv
+python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
+pip install -e .
+```
 
 ### 3. Configure Environment
 
@@ -102,7 +102,7 @@ LOG_LEVEL=INFO
 
 ```bash
 python server.py
-   ```
+```
 
 The server will start on `http://localhost:5000`
 
@@ -154,12 +154,18 @@ The assistant will:
 
 ```
 eag-v2-s7/
-├── agent/                          # Cognitive architecture (memory layer used)
+├── agent/                          # Cognitive architecture modules
+│   ├── __init__.py                 # Module exports
+│   ├── ai_agent.py                 # Cognitive agent orchestrator
 │   ├── memory.py                   # FAISS vector store for YouTube transcripts
 │   ├── models.py                   # Pydantic models for YouTube RAG
-│   └── ...                         # Other cognitive components
+│   ├── perception.py                # Perception layer (cognitive layer)
+│   ├── decision.py                 # Decision layer (cognitive layer)
+│   ├── action.py                   # Action layer (cognitive layer)
+│   └── prompts.py                  # Cognitive layer prompts
 │
-├── server_mcp/                     # Tools and utilities
+├── tools/                          # Tools and utilities
+│   ├── __init__.py                 # Module exports
 │   └── tools_youtube.py            # YouTube transcript fetching, chunking, embedding
 │
 ├── chrome-extension/               # Chrome extension frontend
@@ -168,14 +174,19 @@ eag-v2-s7/
 │   ├── popup.html                  # Extension UI
 │   ├── popup.js                    # Extension logic
 │   └── images/                     # Extension icons
+│       ├── icon16.png              # 16x16 icon
+│       ├── icon48.png              # 48x48 icon
+│       └── icon128.png             # 128x128 icon
 │
 ├── logs/                           # Generated at runtime
 │   ├── youtube_memory.json         # Memory state
 │   ├── youtube_faiss.index         # FAISS vector index
-│   └── youtube_metadata.pkl        # Video chunk metadata
+│   ├── youtube_metadata.pkl        # Video chunk metadata
+│   └── cognitive_agent_*.log        # Cognitive agent logs
 │
 ├── server.py                       # Flask API server
-├── pyproject.toml                  # Project dependencies
+├── pyproject.toml                  # Project dependencies and configuration
+├── uv.lock                         # Dependency lock file (uv package manager)
 └── README.md                       # This file
 ```
 
@@ -213,8 +224,9 @@ This ensures coherent, complete statements rather than fragments.
 ### Answer Generation
 
 - **Model**: Google Gemini 2.0 Flash Exp
-- **Context**: Top 3 relevant chunks from FAISS search
-- **Prompt**: Includes transcript context + user question
+- **Architecture**: Cognitive layers (Perception → Decision → Action)
+- **Context**: Top relevant chunks from FAISS search (with surrounding context expansion)
+- **Prompt**: Includes transcript context + user question processed through cognitive layers
 
 ---
 
@@ -222,12 +234,18 @@ This ensures coherent, complete statements rather than fragments.
 
 ### `POST /api/index_youtube`
 
-Index a YouTube video.
+Index a YouTube video (asynchronous).
 
 **Request**:
 ```json
 {
   "video_id": "dQw4w9WgXcQ"
+}
+```
+or
+```json
+{
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 }
 ```
 
@@ -236,21 +254,37 @@ Index a YouTube video.
 {
   "success": true,
   "video_id": "dQw4w9WgXcQ",
-  "chunks_indexed": 42,
-  "message": "Successfully indexed 42 chunks"
+  "message": "Indexing started in background",
+  "status": "started"
+}
+```
+
+### `GET /api/indexing_status/<video_id>`
+
+Get the current indexing status for a video.
+
+**Response**:
+```json
+{
+  "success": true,
+  "video_id": "dQw4w9WgXcQ",
+  "status": "completed",
+  "progress": 100,
+  "total_chunks": 42,
+  "message": "Successfully indexed 42 chunks",
+  "start_time": "2025-01-27T20:15:00",
+  "end_time": "2025-01-27T20:18:00"
 }
 ```
 
 ### `POST /api/ask_youtube`
 
-Ask a question about indexed videos.
+Ask a question about indexed videos using cognitive layers.
 
 **Request**:
 ```json
 {
-  "question": "What is the main topic?",
-  "video_id": "dQw4w9WgXcQ",  // Optional
-  "top_k": 3
+  "question": "What is the main topic?"
 }
 ```
 
@@ -270,7 +304,12 @@ Ask a question about indexed videos.
   ],
   "youtube_links": [
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=45s"
-  ]
+  ],
+  "cognitive_analysis": {
+    "perception": {...},
+    "decision": {...},
+    "action": {...}
+  }
 }
 ```
 
