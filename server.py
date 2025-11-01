@@ -361,6 +361,44 @@ def health_check():
     })
 
 
+@app.route('/api/video_indexed/<video_id>', methods=['GET'])
+def check_video_indexed(video_id):
+    """
+    Check if a specific video is indexed.
+    
+    Response:
+        {
+            "indexed": true/false,
+            "video_id": "dQw4w9WgXcQ",
+            "chunk_count": 42
+        }
+    """
+    try:
+        stats = memory_layer.get_youtube_stats()
+        indexed_videos = set(stats.get('video_ids', []))
+        is_indexed = video_id in indexed_videos
+        
+        # Count chunks for this specific video
+        chunk_count = 0
+        if memory_layer.youtube_metadata:
+            chunk_count = sum(1 for meta in memory_layer.youtube_metadata if meta.get('video_id') == video_id)
+        
+        return jsonify({
+            'indexed': is_indexed,
+            'video_id': video_id,
+            'chunk_count': chunk_count
+        })
+        
+    except Exception as e:
+        logger.error(f"Error checking video index status: {str(e)}")
+        return jsonify({
+            'indexed': False,
+            'video_id': video_id,
+            'chunk_count': 0,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/index_youtube', methods=['POST'])
 def index_youtube():
     """
@@ -538,6 +576,7 @@ def ask_youtube():
     try:
         data = request.get_json()
         question = data.get('question')
+        video_id = data.get('video_id')  # Optional: restrict to specific video
         
         if not question:
             return jsonify({
@@ -545,7 +584,18 @@ def ask_youtube():
                 'message': 'Question is required'
             }), 400
         
-        logger.info(f"🎬 Processing YouTube question with cognitive layers: {question}")
+        # If video_id is provided, validate it's indexed
+        if video_id:
+            stats = memory_layer.get_youtube_stats()
+            indexed_videos = set(stats.get('video_ids', []))
+            if video_id not in indexed_videos:
+                return jsonify({
+                    'success': False,
+                    'message': f'Video {video_id} is not indexed yet. Please index it first.'
+                }), 400
+            logger.info(f"🎬 Processing YouTube question restricted to video: {video_id}")
+        else:
+            logger.info(f"🎬 Processing YouTube question with cognitive layers (all videos): {question}")
         
         # Check if index is empty
         stats = memory_layer.get_youtube_stats()
@@ -571,7 +621,7 @@ def ask_youtube():
         asyncio.set_event_loop(loop)
         try:
             response = loop.run_until_complete(
-                cognitive_agent.process_youtube_question(question, memory_layer, gemini_model)
+                cognitive_agent.process_youtube_question(question, memory_layer, gemini_model, video_id=video_id)
             )
         finally:
             loop.close()

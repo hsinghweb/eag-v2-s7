@@ -269,7 +269,8 @@ class ActionLayer:
         decision: YouTubeDecisionOutput,
         memory_layer: MemoryLayer,
         gemini_model: genai.GenerativeModel,
-        original_question: str
+        original_question: str,
+        video_id: Optional[str] = None
     ) -> YouTubeActionResult:
         """
         Execute YouTube question answering based on decision plan.
@@ -291,11 +292,14 @@ class ActionLayer:
             search_embedding = get_ollama_embedding(decision.search_query)
             
             # Step 2: Search FAISS index
-            logger.debug(f"Searching FAISS index with top_k={decision.top_k}")
+            if video_id:
+                logger.debug(f"Searching FAISS index with top_k={decision.top_k} (restricted to video: {video_id})")
+            else:
+                logger.debug(f"Searching FAISS index with top_k={decision.top_k} (all videos)")
             contexts = memory_layer.search_youtube_content(
                 query_embedding=search_embedding,
                 top_k=decision.top_k,
-                video_id_filter=None  # Search across all videos
+                video_id_filter=video_id  # Filter by video_id if provided
             )
             
             if not contexts:

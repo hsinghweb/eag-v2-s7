@@ -205,6 +205,52 @@
       font-family: 'Courier New', monospace;
       font-weight: 600;
     }
+    
+    .video-indexed-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      background: #4caf50;
+      color: white;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+    
+    .video-not-indexed {
+      color: #666;
+      font-size: 11px;
+    }
+    
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 8px;
+      background: white;
+      border-radius: 4px;
+      border: 1px solid #e0e0e0;
+    }
+    
+    .checkbox-group input[type="checkbox"] {
+      margin-right: 8px;
+      cursor: pointer;
+      width: 18px;
+      height: 18px;
+    }
+    
+    .checkbox-group label {
+      margin: 0;
+      cursor: pointer;
+      font-size: 13px;
+      color: #333;
+      flex: 1;
+    }
+    
+    .checkbox-group:has(input:disabled) {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -231,6 +277,10 @@
   <!-- Ask Question Section -->
   <div class="section">
     <div class="section-title">❓ Ask About Any Indexed Video</div>
+    <div class="checkbox-group" id="restrict-video-group" style="display: none;">
+      <input type="checkbox" id="restrict-to-current-video" disabled>
+      <label for="restrict-to-current-video">Search only in current video</label>
+    </div>
     <div class="input-group">
       <label for="question-input">Your Question:</label>
       <textarea 

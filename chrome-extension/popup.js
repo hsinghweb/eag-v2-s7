@@ -8,6 +8,7 @@ const API_BASE = 'http://localhost:5000/api';
 
 // DOM Elements
 let currentVideoId = null;
+let isCurrentVideoIndexed = false;
 const videoStatusEl = document.getElementById('video-status');
 const indexBtn = document.getElementById('index-btn');
 const askBtn = document.getElementById('ask-btn');
@@ -18,6 +19,8 @@ const resultEl = document.getElementById('result');
 const indexingProgressEl = document.getElementById('indexing-progress');
 const progressBarEl = document.getElementById('progress-bar');
 const progressTextEl = document.getElementById('progress-text');
+const restrictVideoGroup = document.getElementById('restrict-video-group');
+const restrictVideoCheckbox = document.getElementById('restrict-to-current-video');
 
 // Initialize popup
 document.addEventListener('DOMContentLoaded', async () => {
@@ -26,6 +29,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Set up event listeners
     indexBtn.addEventListener('click', indexCurrentVideo);
     askBtn.addEventListener('click', askQuestion);
+    restrictVideoCheckbox.addEventListener('change', () => {
+        // Checkbox state changed, no action needed (used when asking question)
+    });
     
     // Allow Ctrl+Enter or Shift+Enter to submit question
     questionInput.addEventListener('keydown', (e) => {
@@ -37,7 +43,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 /**
- * Check if we're on a YouTube video page
+ * Check if we're on a YouTube video page and if it's indexed
  */
 async function checkCurrentVideo() {
     try {
@@ -45,31 +51,38 @@ async function checkCurrentVideo() {
         
         if (!tab) {
             videoStatusEl.textContent = 'No active tab found';
+            restrictVideoGroup.style.display = 'none';
             return;
         }
         
         // Check if we're on YouTube
-        if (!tab.url || (!tab.url.includes('youtube.com/watch'))) {
+        if (!tab.url?.includes('youtube.com/watch')) {
             videoStatusEl.textContent = 'Navigate to a YouTube video to index it';
             indexBtn.disabled = true;
+            restrictVideoGroup.style.display = 'none';
             return;
         }
         
         // Get video ID from content script
-        chrome.tabs.sendMessage(tab.id, { action: 'getVideoId' }, (response) => {
+        chrome.tabs.sendMessage(tab.id, { action: 'getVideoId' }, async (response) => {
             if (chrome.runtime.lastError) {
                 videoStatusEl.textContent = 'Please refresh the YouTube page';
                 indexBtn.disabled = true;
+                restrictVideoGroup.style.display = 'none';
                 return;
             }
             
-            if (response && response.videoId) {
+            if (response?.videoId) {
                 currentVideoId = response.videoId;
                 videoStatusEl.innerHTML = `Video ID: <span class="video-id">${currentVideoId}</span>`;
                 indexBtn.disabled = false;
+                
+                // Check if video is indexed
+                await checkVideoIndexed(currentVideoId);
             } else {
                 videoStatusEl.textContent = 'Could not detect video ID';
                 indexBtn.disabled = true;
+                restrictVideoGroup.style.display = 'none';
             }
         });
         
@@ -77,6 +90,52 @@ async function checkCurrentVideo() {
         console.error('Error checking video:', error);
         videoStatusEl.textContent = 'Error detecting video';
         indexBtn.disabled = true;
+        restrictVideoGroup.style.display = 'none';
+    }
+}
+
+/**
+ * Check if the current video is indexed
+ */
+async function checkVideoIndexed(videoId) {
+    try {
+        const response = await fetch(`${API_BASE}/video_indexed/${videoId}`);
+        const data = await response.json();
+        
+        isCurrentVideoIndexed = data.indexed || false;
+        
+        if (isCurrentVideoIndexed) {
+            // Show indexed badge
+            const existingBadge = videoStatusEl.querySelector('.video-indexed-badge');
+            if (!existingBadge) {
+                const badge = document.createElement('span');
+                badge.className = 'video-indexed-badge';
+                badge.textContent = '✓ Indexed';
+                videoStatusEl.appendChild(badge);
+            }
+            
+            // Show and enable restrict checkbox
+            restrictVideoGroup.style.display = 'flex';
+            restrictVideoCheckbox.disabled = false;
+        } else {
+            // Remove badge if exists
+            const existingBadge = videoStatusEl.querySelector('.video-indexed-badge');
+            if (existingBadge) {
+                existingBadge.remove();
+            }
+            
+            // Hide and disable restrict checkbox
+            restrictVideoGroup.style.display = 'none';
+            restrictVideoCheckbox.disabled = true;
+            restrictVideoCheckbox.checked = false;
+        }
+    } catch (error) {
+        console.error('Error checking video index status:', error);
+        // On error, assume not indexed
+        isCurrentVideoIndexed = false;
+        restrictVideoGroup.style.display = 'none';
+        restrictVideoCheckbox.disabled = true;
+        restrictVideoCheckbox.checked = false;
     }
 }
 
@@ -142,6 +201,8 @@ async function indexCurrentVideo() {
                     Video ID: ${data.video_id}<br>
                     <small>You can now ask questions about this video</small>
                 `);
+                // Update indexed status
+                await checkVideoIndexed(data.video_id);
                 return;
             }
             
@@ -188,6 +249,8 @@ async function pollIndexingStatus(videoId) {
                     Chunks indexed: ${status.total_chunks}<br>
                     <small>You can now ask questions about this video</small>
                 `);
+                // Update indexed status
+                await checkVideoIndexed(status.video_id);
                 return;
             } else if (status.status === 'failed') {
                 // Hide progress bar and show error
@@ -239,18 +302,29 @@ async function askQuestion() {
       return;
     }
 
-    showLoading('Searching and generating answer...');
+    // Check if user wants to restrict to current video
+    const restrictToCurrentVideo = restrictVideoCheckbox.checked && isCurrentVideoIndexed && currentVideoId;
+    const videoIdToUse = restrictToCurrentVideo ? currentVideoId : null;
+
+    showLoading(restrictToCurrentVideo ? 'Searching in current video...' : 'Searching and generating answer...');
 
     try {
+        const requestBody = { 
+            question: question,
+            top_k: 3
+        };
+        
+        // Add video_id if restricting to current video
+        if (videoIdToUse) {
+            requestBody.video_id = videoIdToUse;
+        }
+        
         const response = await fetch(`${API_BASE}/ask_youtube`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-                question: question,
-                top_k: 3
-        })
+        body: JSON.stringify(requestBody)
       });
 
         const data = await response.json();
@@ -270,20 +344,25 @@ async function askQuestion() {
                         <div class="answer-label">📺 Relevant video segments:</div>
                 `;
                 
-                data.contexts.forEach((ctx, index) => {
+                for (const [index, ctx] of data.contexts.entries()) {
                     const link = data.youtube_links[index];
                     const timestamp = formatTimestamp(ctx.timestamp);
+                    // Use onclick to open in same tab
+                    const videoIdFromContext = ctx.video_id;
                     resultHTML += `
-                        <a href="${link}" target="_blank" class="context-link">
+                        <a href="${link}" class="context-link youtube-link" data-video-id="${videoIdFromContext}" data-timestamp="${ctx.timestamp}">
                             <span class="timestamp">${timestamp}</span> - Video ${ctx.video_id}
                         </a>
                     `;
-                });
+                }
                 
                 resultHTML += '</div>';
             }
             
             showResult(resultHTML);
+            
+            // Attach click handlers to YouTube links to open in same tab
+            attachYouTubeLinkHandlers();
         } else {
             showResult(`❌ ${data.message}`, true);
       }
@@ -293,6 +372,30 @@ async function askQuestion() {
         showResult(`❌ Failed to connect to server. Make sure the Flask server is running on port 5000.`, true);
     } finally {
         hideLoading();
+    }
+}
+
+/**
+ * Attach click handlers to YouTube links to open in same tab
+ */
+function attachYouTubeLinkHandlers() {
+    const links = resultEl.querySelectorAll('.youtube-link');
+    for (const link of links) {
+        link.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const url = link.getAttribute('href');
+            
+            // Get current active tab
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            
+            // Update current tab with new URL (works whether on YouTube or not)
+            if (tab?.id) {
+                chrome.tabs.update(tab.id, { url: url });
+            }
+            
+            // Close popup after navigating
+            window.close();
+        });
     }
 }
 

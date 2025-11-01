@@ -8,9 +8,11 @@ A Chrome Extension + Flask backend project that helps you understand YouTube vid
 
 ### 🎯 Core Capabilities
 - **📹 Video Indexing**: One-click indexing of YouTube video transcripts
+- **✅ Auto-Detection**: Automatically detects if the current video is already indexed
+- **🎯 Focused Search**: Option to restrict questions to the current video only (faster searches)
 - **🔍 Semantic Search**: Find relevant content using meaning, not just keywords
 - **💬 Smart Q&A**: Ask questions and get answers with exact timestamp references
-- **🔗 Direct Links**: Click to jump directly to the relevant part of the video
+- **🔗 Direct Links**: Click to jump directly to the relevant part of the video (opens in same tab)
 - **🏠 Runs Locally**: Privacy-first with local Ollama embeddings
 - **📝 Full Sentences**: Intelligent transcript chunking with complete statements
 - **🚀 Fast & Accurate**: FAISS vector search + Google Gemini answers
@@ -24,9 +26,10 @@ A Chrome Extension + Flask backend project that helps you understand YouTube vid
 1. **Watch** a YouTube video
 2. **Click** "Index This Video" in the Chrome extension
 3. **Backend** fetches transcript → chunks into full sentences → embeds with Nomic → stores in FAISS
-4. **Ask** any question about the video
-5. **Get** a detailed answer + YouTube links with timestamps
-6. **Click** the timestamp link to jump right to that part of the video
+4. **Extension automatically detects** if the video is indexed (shows ✓ Indexed badge)
+5. **Ask** any question about the video (optionally restrict to current video only)
+6. **Get** a detailed answer + YouTube links with timestamps
+7. **Click** the timestamp link to jump right to that part of the video (opens in same tab)
 
 ### The Tech Stack
 
@@ -125,6 +128,7 @@ The server will start on `http://localhost:5000`
 3. You'll see the video ID detected
 4. Click **"Index This Video"**
 5. Wait for confirmation (usually 10-30 seconds depending on video length)
+6. Once indexed, you'll see a **✓ Indexed** badge next to the video ID
 
 ### Asking Questions
 
@@ -142,8 +146,17 @@ How does the speaker define [specific term]?
 Summarize the conclusion
 ```
 
+**New Features:**
+
+- **Auto-Detection**: If you're on a video that's already indexed, the extension automatically shows a **✓ Indexed** badge
+- **Restrict to Current Video**: When viewing an indexed video, you'll see a checkbox option "Search only in current video". Check this to:
+  - Get faster search results (searches only one video instead of all)
+  - Focus answers on the specific video you're watching
+  - Perfect for when you have many videos indexed but want to ask about just one
+- **Same-Tab Navigation**: Clicking timestamp links now opens them in the same tab, making it feel like you're asking YouTube and quickly jumping to the answer
+
 The assistant will:
-- Search through all indexed videos (or just the current video)
+- Search through all indexed videos (or just the current video if restricted)
 - Find the most relevant transcript chunks
 - Generate a detailed answer using Gemini
 - Provide timestamp links to the exact moments in the video
@@ -277,11 +290,37 @@ Get the current indexing status for a video.
 }
 ```
 
+### `GET /api/video_indexed/<video_id>`
+
+Check if a specific video is indexed.
+
+**Response**:
+```json
+{
+  "indexed": true,
+  "video_id": "dQw4w9WgXcQ",
+  "chunk_count": 42
+}
+```
+
 ### `POST /api/ask_youtube`
 
 Ask a question about indexed videos using cognitive layers.
 
 **Request**:
+```json
+{
+  "question": "What is the main topic?",
+  "video_id": "dQw4w9WgXcQ"
+}
+```
+
+The `video_id` parameter is **optional**. If provided:
+- Search will be restricted to only the specified video
+- Faster search performance
+- Useful when you want to focus on a specific video
+
+**Request (search all videos)**:
 ```json
 {
   "question": "What is the main topic?"
@@ -436,6 +475,12 @@ This project is licensed under the MIT License.
 
 **Built with ❤️ for better YouTube learning**
 
-**Version**: 1.0  
+**Version**: 1.1  
 **Last Updated**: January 2025  
 **Status**: ✅ Production Ready
+
+### What's New in v1.1
+
+- ✨ **Auto-Detection**: Automatically detects if current video is indexed
+- 🎯 **Focused Search**: Option to restrict questions to current video only
+- 🔗 **Same-Tab Links**: Timestamp links now open in the same tab for seamless navigation

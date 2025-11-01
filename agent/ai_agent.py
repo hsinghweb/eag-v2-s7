@@ -622,7 +622,8 @@ class CognitiveAgent:
         self, 
         question: str, 
         memory_layer: MemoryLayer,
-        gemini_model: genai.GenerativeModel
+        gemini_model: genai.GenerativeModel,
+        video_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process YouTube question using cognitive layers.
@@ -666,7 +667,7 @@ class CognitiveAgent:
             # Step 3: Action Layer - Execute the plan
             logger.info("🎯 ACTION LAYER: Executing plan...")
             action_result = self.action.execute_youtube_question(
-                decision, memory_layer, gemini_model, question
+                decision, memory_layer, gemini_model, question, video_id=video_id
             )
             
             logger.info("Action Result:")
